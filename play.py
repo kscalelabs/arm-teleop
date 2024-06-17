@@ -30,6 +30,10 @@ parser.add_argument("--camera", type=str, default="webcam")
 parser.add_argument("--name", type=str, default="test", help="logging name")
 args = parser.parse_args()
 
+ASSETS_DIR: str = os.path.join(os.path.dirname(__file__), "robot")
+DATA_DIR: str = os.path.join(os.path.dirname(__file__), "data")
+DATE_FORMAT: str = "%mm%dd%Yy_%Hh%Mm"
+
 # ------ robots
 
 @dataclass
@@ -41,7 +45,7 @@ class Robot:
     eel_link: str = None
     eer_chain: List[str] = None
     eel_chain: List[str] = None
-    pb_ik_q_list: List[str] = []
+    pb_ik_q_list: List[str] = None
     # start positions for robot
     pb_start_pos: NDArray = np.array([0, 0, 0])
     pb_start_eul: NDArray = np.array([0, 0, 0])
@@ -55,7 +59,8 @@ class Robot:
 
 ROBOTS: OrderedDict[str, Robot] = ODict()
 ROBOTS['5dof'] = Robot(
-    urdf_path="robot/full_arm_5_dof_merged_simplified.urdf",
+    urdf_path=f"{ASSETS_DIR}/full_arm_5_dof_merged_simplified.urdf",
+    # urdf_path="robot/full_arm_5_dof.urdf",
     bimanual=False,
     start_q=ODict([
         ('joint_upper_left_arm_1_rmd_x4_24_mock_1_dof_x4', 0.0),
@@ -75,8 +80,6 @@ ROBOTS['5dof'] = Robot(
         'joint_lower_arm_1_dof_1_rmd_x4_24_mock_2_dof_x4',
         'joint_lower_arm_1_dof_1_hand_1_rmd_x4_24_mock_1_dof_x4',
         'joint_upper_left_arm_1_rmd_x8_90_mock_1_dof_x8',
-        # 'joint_lower_arm_1_dof_1_hand_1_slider_1',
-        # 'joint_lower_arm_1_dof_1_hand_1_slider_2',
     ],
     pb_ik_q_list=[
         'joint_upper_left_arm_1_rmd_x4_24_mock_1_dof_x4',
@@ -85,8 +88,8 @@ ROBOTS['5dof'] = Robot(
         'joint_lower_arm_1_dof_1_rmd_x4_24_mock_2_dof_x4',
         'joint_lower_arm_1_dof_1_hand_1_rmd_x4_24_mock_1_dof_x4',
         'joint_upper_left_arm_1_rmd_x8_90_mock_1_dof_x8',
-        # 'joint_lower_arm_1_dof_1_hand_1_slider_1',
-        # 'joint_lower_arm_1_dof_1_hand_1_slider_2',
+        'joint_lower_arm_1_dof_1_hand_1_slider_1',
+        'joint_lower_arm_1_dof_1_hand_1_slider_2',
     ],
 )
 
@@ -192,7 +195,7 @@ def vuer2mj_orn(orn: R) -> NDArray:
 
 # ------ pybullet (used for ik)
 
-HEADLESS: bool = True
+HEADLESS: bool = False
 # damping determines which joints are used for ik
 DAMPING_CHAIN: float = 0.1
 DAMPING_NON_CHAIN: float = 10.0
@@ -388,8 +391,6 @@ async def hand_handler(event, _):
 # ------ data recording (both h5py and rerun)
 
 if args.enable_h5py or args.enable_rerun:
-    DATA_DIR: str = os.path.join(os.path.dirname(__file__), "data")
-    DATE_FORMAT: str = "%mm%dd%Yy_%Hh%Mm"
     MAX_EPISODE_STEPS: int = 64
     episode_idx: int = 0
     step: int = 0
@@ -564,8 +565,7 @@ async def record_rerun() -> None:
 
 @vuer_app.spawn(start=True)
 async def main(session: VuerSession):
-    global q
-    global cube_pos, cube_orn
+    global robot_q, robot_pos, robot_orn
     global hr_pos, hr_orn
     global hl_pos, hl_orn
     session.upsert @ PointLight(intensity=VUER_LIGHT_INTENSITY, position=VUER_LIGHT_POS)
@@ -573,7 +573,7 @@ async def main(session: VuerSession):
     await asyncio.sleep(0.1)
     session.upsert @ Urdf(
         src=robot.urdf_path,
-        jointValues=robot.start_q,
+        jointValues=robot_q,
         position=robot_pos,
         rotation=robot_orn,
         key="robot",

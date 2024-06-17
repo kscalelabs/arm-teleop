@@ -1,5 +1,5 @@
 opencv-python==4.9.0.80
 pybullet==3.2.6
-vuer==0.0.30
+vuer[all]==0.0.30
 h5py>=3.11.0
 rerun-sdk>=0.16.0
