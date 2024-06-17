@@ -15,7 +15,7 @@ import pybullet as p
 import pybullet_data
 from scipy.spatial.transform import Rotation as R
 from vuer import Vuer, VuerSession
-from vuer.schemas import Hands, ImageBackground, Plane, PointLight, Urdf
+from vuer.schemas import Hands, ImageBackground, PointLight, Urdf
 
 
 parser = argparse.ArgumentParser()
@@ -28,13 +28,32 @@ args = parser.parse_args()
 @dataclass
 class Robot:
     urdf_path: str
+    bimanual: bool
+    start_q: OrderedDict[str, float]
+    eer_link: str = None
+    eel_link: str = None
+    eer_chain: List[str] = None
+    eel_chain: List[str] = None
+    pb_ik_q_list: List[str] = []
+    # start positions for robot
+    pb_start_pos: NDArray = np.array([0, 0, 0])
+    pb_start_eul: NDArray = np.array([0, 0, 0])
+    vuer_start_pos: NDArray = np.array([0, 0, 0])
+    vuer_start_eul: NDArray = np.array([0, 0, 0])
+    # start positions for end effectors
+    pb_start_pos_eer: NDArray = np.array([0, 0, 0])
+    pb_start_eul_eer: NDArray = np.array([0, 0, 0])
+    pb_start_pos_eel: NDArray = np.array([0, 0, 0])
+    pb_start_eul_eel: NDArray = np.array([0, 0, 0])
 
-ROBOTS: ODict[str, Robot] = OrderedDict()
+ROBOTS: OrderedDict[str, Robot] = ODict()
 ROBOTS['5dof'] = Robot(urdf="5dof/5dof.urdf")
 ROBOTS['torso'] = Robot(urdf="7dof/7dof.urdf")
 
 assert args.robot in ROBOTS, f"robot {args.robot} not found"
 robot: Robot = ROBOTS[args.robot]
+robot_lock: asyncio.Lock = asyncio.Lock()
+robot_q: Dict[str, float] = deepcopy(robot.start_q)
 
 print("🤖 loading robot")
 print(f"\t robot: {args.robot}")
@@ -55,7 +74,7 @@ class Camera:
     dtype = np.uint8
     device_id: int = 0
 
-CAMS: ODict[str, Camera] = OrderedDict()
+CAMS: OrderedDict[str, Camera] = ODict()
 CAMS['webcam'] = Camera(
     name="webcam",
     w=1280,
@@ -78,7 +97,7 @@ print(f"\t resolution: {cam.w}x{cam.h}")
 print(f"\t fps: {cam.fps}")
 
 img_lock: asyncio.Lock = asyncio.Lock()
-img: NDArray[cam.dtype] = np.zeros((cam.w, cam.h, cam.c), dtype=cam.dtype)
+img: NDArray = np.zeros((cam.w, cam.h, cam.c), dtype=cam.dtype)
 
 cam: cv2.VideoCapture = cv2.VideoCapture(cam.device_id)
 cam.set(cv2.CAP_PROP_FRAME_WIDTH, cam.w)
@@ -123,12 +142,12 @@ else:
     if clid < 0:
         p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
-pb_robot_id = p.loadURDF(robot.urdf_path, [0, 0, 0], useFixedBase=True)
+pb_robot_id = p.loadURDF(robot.urdf_path, robot.pb_start_pos, useFixedBase=True)
 p.setGravity(0, 0, 0)
 p.resetBasePositionAndOrientation(
     pb_robot_id,
-    START_POS_TRUNK_PYBULLET,
-    p.getQuaternionFromEuler(START_EUL_TRUNK_PYBULLET),
+    robot.pb_start_pos,
+    p.getQuaternionFromEuler(robot.pb_start_eul),
 )
 pb_num_joints: int = p.getNumJoints(pb_robot_id)
 print(f"\t number of joints: {pb_num_joints}")
@@ -148,26 +167,25 @@ for i in range(pb_num_joints):
     pb_joint_lower_limit[i] = info[9]
     pb_joint_upper_limit[i] = info[10]
     pb_joint_ranges[i] = abs(info[10] - info[9])
-    if name in START_Q:
-        pb_start_q[i] = START_Q[name]
-    if name in EER_CHAIN_ARM or name in EEL_CHAIN_ARM:
+    if name in robot.start_q:
+        pb_start_q[i] = robot.start_q[name]
+    if name in robot.pb_ik_q_list:
+        pb_q_map[name] = i
+    if name in robot.eer_chain:
+        pb_damping[i] = DAMPING_CHAIN
+    elif robot.bimanual and name in robot.eel_chain:
         pb_damping[i] = DAMPING_CHAIN
     else:
         pb_damping[i] = DAMPING_NON_CHAIN
-    if name in IK_Q_LIST:
-        pb_q_map[name] = i
-pb_eer_id = pb_child_link_names.index(EER_LINK)
-pb_eel_id = pb_child_link_names.index(EEL_LINK)
-for i in range(pb_num_joints):
     p.resetJointState(pb_robot_id, i, pb_start_q[i])
 
-# global variables get updated by various async functions
-q_lock = asyncio.Lock()
-q: Dict[str, float] = deepcopy(START_Q)
-goal_pos_eer: NDArray = START_POS_EER_VUER
-goal_orn_eer: NDArray = p.getQuaternionFromEuler(START_EUL_TRUNK_VUER)
-goal_pos_eel: NDArray = START_POS_EEL_VUER
-goal_orn_eel: NDArray = p.getQuaternionFromEuler(START_EUL_TRUNK_VUER)
+pb_eer_id: int = pb_child_link_names.index(robot.eer_link)
+goal_pos_eer: NDArray = robot.pb_start_pos_eer
+goal_orn_eer: NDArray = p.getQuaternionFromEuler(robot.pb_start_eul_eer)
+if robot.bimanual:
+    pb_eel_id: int = pb_child_link_names.index(robot.eel_link)
+    goal_pos_eel: NDArray = robot.pb_start_pos_eel
+    goal_orn_eel: NDArray = p.getQuaternionFromEuler(robot.pb_start_eul_eel)
 
 
 async def ik(arm: str) -> None:
@@ -175,15 +193,17 @@ async def ik(arm: str) -> None:
     if arm == "right":
         global goal_pos_eer, goal_orn_eer
         ee_id = pb_eer_id
-        ee_chain = EER_CHAIN_ARM
+        ee_chain = robot.eer_chain
         pos = goal_pos_eer
         orn = goal_orn_eer
-    else:
+    elif robot.bimanual and arm == "left":
         global goal_pos_eel, goal_orn_eel
         ee_id = pb_eel_id
-        ee_chain = EEL_CHAIN_ARM
+        ee_chain = robot.eel_chain
         pos = goal_pos_eel
         orn = goal_orn_eel
+    else:
+        raise ValueError(f"arm {arm} not found")
     # print(f"ik {arm} {pos} {orn}")
     pb_q = p.calculateInverseKinematics(
         pb_robot_id,
@@ -195,12 +215,12 @@ async def ik(arm: str) -> None:
         pb_joint_ranges,
         pb_start_q,
     )
-    async with q_lock:
-        global q
+    async with robot_lock:
+        global robot_q
         for i, val in enumerate(pb_q):
-            joint_name = IK_Q_LIST[i]
+            joint_name = robot.pb_ik_q_list[i]
             if joint_name in ee_chain:
-                q[joint_name] = val
+                robot_q[joint_name] = val
                 p.resetJointState(pb_robot_id, pb_q_map[joint_name], val)
     print(f"ik {arm} took {time.time() - start_time} seconds")
 
@@ -288,7 +308,7 @@ async def hand_handler(event, _):
         # reset the hand indicator to the pinky
         hr_pos = rthumb_pos
         hr_orn = rwrist_orn
-    if BIMANUAL:
+    if robot.bimanual:
         global hl_pos, hl_orn, eel_pos, eel_orn, grip_l
         # left hand
         lindex_pos: NDArray = np.array(event.value["leftLandmarks"][FINGER_INDEX])
@@ -333,45 +353,12 @@ async def main(session: VuerSession):
     session.upsert @ Hands(fps=HAND_FPS, stream=True, key="hands")
     await asyncio.sleep(0.1)
     session.upsert @ Urdf(
-        src=URDF_WEB_PATH,
-        jointValues=env.unwrapped.q_dict,
+        src=robot.urdf_path,
+        jointValues=robot.start_q,
         position=k.mj2vuer_pos(robot_pos),
         rotation=k.mj2vuer_orn(robot_orn),
         key="robot",
     )
-    session.upsert @ Box(
-        args=cube_size,
-        position=k.mj2vuer_pos(cube_pos),
-        rotation=k.mj2vuer_orn(cube_orn),
-        materialType="standard",
-        material=dict(color="#ff0000"),
-        key="cube",
-    )
-    session.upsert @ Plane(
-        args=TABLE_SIZE,
-        position=k.mj2vuer_pos(table_pos),
-        rotation=TABLE_ROT,
-        materialType="standard",
-        material=dict(color="#cbc1ae"),
-        key="table",
-    )
-    session.upsert @ Sphere(
-        args=SPHERE_ARGS,
-        position=hr_pos,
-        rotation=hr_orn,
-        materialType="standard",
-        material=dict(color="#0000ff"),
-        key="hand_r",
-    )
-    if BIMANUAL:
-        session.upsert @ Sphere(
-            args=SPHERE_ARGS,
-            position=hl_pos,
-            rotation=hl_orn,
-            materialType="standard",
-            material=dict(color="#ff0000"),
-            key="hand_l",
-        )
     while True:
         await asyncio.gather(
             ik("left"),  # ~1ms
@@ -381,9 +368,9 @@ async def main(session: VuerSession):
             update_image(),  # ~10ms
             asyncio.sleep(1 / MAX_FPS),  # ~16ms @ 60fps
         )
-        async with async_lock:
+        async with robot_lock:
             session.upsert @ Urdf(
-                jointValues=q,
+                jointValues=robot_q,
                 position=k.mj2vuer_pos(robot_pos),
                 rotation=k.mj2vuer_orn(robot_orn),
                 key="robot",
@@ -404,19 +391,3 @@ async def main(session: VuerSession):
                 ),
                 to="bgChildren",
             )
-            session.upsert @ Box(
-                position=k.mj2vuer_pos(cube_pos),
-                rotation=k.mj2vuer_orn(cube_orn),
-                key="cube",
-            )
-            session.upsert @ Sphere(
-                position=hr_pos,
-                rotation=hr_orn,
-                key="hand_r",
-            )
-            if BIMANUAL:
-                session.upsert @ Sphere(
-                    position=hl_pos,
-                    rotation=hl_orn,
-                    key="hand_l",
-                )
