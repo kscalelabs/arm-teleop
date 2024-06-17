@@ -3,9 +3,7 @@ import asyncio
 from collections import OrderedDict as ODict
 from copy import deepcopy
 from dataclasses import dataclass
-import os
 import time
-import math
 from typing import Dict, List, OrderedDict, Tuple
 
 import cv2
@@ -47,13 +45,19 @@ class Robot:
     pb_start_eul_eel: NDArray = np.array([0, 0, 0])
 
 ROBOTS: OrderedDict[str, Robot] = ODict()
-ROBOTS['5dof'] = Robot(urdf="5dof/5dof.urdf")
-ROBOTS['torso'] = Robot(urdf="7dof/7dof.urdf")
+ROBOTS['5dof'] = Robot(
+    urdf_path="5dof/5dof.urdf"
+)
+ROBOTS['torso'] = Robot(
+    urdf_path="7dof/7dof.urdf"
+)
 
 assert args.robot in ROBOTS, f"robot {args.robot} not found"
 robot: Robot = ROBOTS[args.robot]
 robot_lock: asyncio.Lock = asyncio.Lock()
 robot_q: Dict[str, float] = deepcopy(robot.start_q)
+robot_pos: NDArray = robot.vuer_start_pos
+robot_orn: NDArray = robot.vuer_start_eul
 
 print("🤖 loading robot")
 print(f"\t robot: {args.robot}")
@@ -116,15 +120,55 @@ async def update_image() -> None:
             img = frame[:, :, BGR_TO_RGB]
     else:
         print("failed to read frame")
-    print(f"Time to update image: {time.time() - start}")
+    print(f"🕒 update_image() took {time.time() - start}s")
+
+# ------ transformations
+
+# PyBullet, Vuer, and Scipy/Rerun use different quaternion conventions
+# https://github.com/clemense/quaternion-conventions
+XYZW_2_WXYZ: NDArray = np.array([3, 0, 1, 2])
+WXYZ_2_XYZW: NDArray = np.array([1, 2, 3, 0])
+MJ_TO_VUER_ROT: R = R.from_euler("z", np.pi) * R.from_euler("x", np.pi / 2)
+VUER_TO_MJ_ROT: R = MJ_TO_VUER_ROT.inv()
+
+def mj2vuer_pos(pos: NDArray) -> NDArray:
+    return MJ_TO_VUER_ROT.apply(pos)
+
+
+def mj2vuer_orn(orn: NDArray, offset: NDArray = None) -> NDArray:
+    rot = R.from_quat(orn[XYZW_2_WXYZ]) * MJ_TO_VUER_ROT
+    if offset is not None:
+        rot = R.from_quat(offset[XYZW_2_WXYZ]) * rot
+    return rot.as_euler("xyz")
+
+
+def vuer2mj_pos(pos: NDArray) -> NDArray:
+    return VUER_TO_MJ_ROT.apply(pos)
+
+
+def vuer2mj_orn(orn: R) -> NDArray:
+    rot = orn * VUER_TO_MJ_ROT
+    return rot.as_quat()[WXYZ_2_XYZW]
 
 # ------ h5py
 
 print("📦 starting h5py")
 
+async def record_h5py() -> None:
+    _start: float = time.time()
+    time.sleep(1.0)
+    print(f"🕒 record_h5py() took {(time.time() - _start) * 1000:.2f}ms")
+    return None
+
 # ------ rerun
 
 print("📊 starting rerun")
+
+async def record_rerun() -> None:
+    _start: float = time.time()
+    time.sleep(1.0)
+    print(f"🕒 record_rerun() took {(time.time() - _start) * 1000:.2f}ms")
+    return None
 
 # ------ pybullet (used for ik)
 
@@ -189,7 +233,7 @@ if robot.bimanual:
 
 
 async def ik(arm: str) -> None:
-    start_time = time.time()
+    _start: float = time.time()
     if arm == "right":
         global goal_pos_eer, goal_orn_eer
         ee_id = pb_eer_id
@@ -222,7 +266,7 @@ async def ik(arm: str) -> None:
             if joint_name in ee_chain:
                 robot_q[joint_name] = val
                 p.resetJointState(pb_robot_id, pb_q_map[joint_name], val)
-    print(f"ik {arm} took {time.time() - start_time} seconds")
+    print(f"🕒 ik({arm}) took {(time.time() - _start) * 1000:.2f}ms")
 
 
 # ------ vuer
@@ -243,37 +287,12 @@ FINGER_PINKY: int = 24
 PINCH_OPEN: float = 0.10  # 10cm
 PINCH_CLOSE: float = 0.01  # 1cm
 
-# MuJoCo and Scipy/Rerun use different quaternion conventions
-# https://github.com/clemense/quaternion-conventions
-XYZW_2_WXYZ: NDArray = np.array([3, 0, 1, 2])
-WXYZ_2_XYZW: NDArray = np.array([1, 2, 3, 0])
-MJ_TO_VUER_ROT: R = R.from_euler("z", np.pi) * R.from_euler("x", np.pi / 2)
-VUER_TO_MJ_ROT: R = MJ_TO_VUER_ROT.inv()
-
-def mj2vuer_pos(pos: NDArray) -> NDArray:
-    return MJ_TO_VUER_ROT.apply(pos)
-
-
-def mj2vuer_orn(orn: NDArray, offset: NDArray = None) -> NDArray:
-    rot = R.from_quat(orn[XYZW_2_WXYZ]) * MJ_TO_VUER_ROT
-    if offset is not None:
-        rot = R.from_quat(offset[XYZW_2_WXYZ]) * rot
-    return rot.as_euler("xyz")
-
-
-def vuer2mj_pos(pos: NDArray) -> NDArray:
-    return VUER_TO_MJ_ROT.apply(pos)
-
-
-def vuer2mj_orn(orn: R) -> NDArray:
-    rot = orn * VUER_TO_MJ_ROT
-    return rot.as_quat()[WXYZ_2_XYZW]
-
 print("🎨 starting vuer")
 app = Vuer()
 
 @app.add_handler("HAND_MOVE")
 async def hand_handler(event, _):
+    _start: float = time.time()
     global hr_pos, hr_orn, eer_pos, eer_orn, grip_r, reset
     # right hand
     rindex_pos: NDArray = np.array(event.value["rightLandmarks"][FINGER_INDEX])
@@ -342,6 +361,7 @@ async def hand_handler(event, _):
             # reset the hand indicator
             hl_pos = lthumb_pos
             hl_orn = lwrist_orn
+    print(f"🕒 hand_handler() took {(time.time() - _start) * 1000:.2f}ms")
 
 @app.spawn(start=True)
 async def main(session: VuerSession):
@@ -355,24 +375,24 @@ async def main(session: VuerSession):
     session.upsert @ Urdf(
         src=robot.urdf_path,
         jointValues=robot.start_q,
-        position=k.mj2vuer_pos(robot_pos),
-        rotation=k.mj2vuer_orn(robot_orn),
+        position=robot_pos,
+        rotation=robot_orn,
         key="robot",
     )
     while True:
         await asyncio.gather(
             ik("left"),  # ~1ms
             ik("right"),  # ~1ms
-            # record_h5py(),
-            # record_rerun(),
+            record_h5py(),
+            record_rerun(),
             update_image(),  # ~10ms
             asyncio.sleep(1 / MAX_FPS),  # ~16ms @ 60fps
         )
         async with robot_lock:
             session.upsert @ Urdf(
                 jointValues=robot_q,
-                position=k.mj2vuer_pos(robot_pos),
-                rotation=k.mj2vuer_orn(robot_orn),
+                position=robot_pos,
+                rotation=robot_orn,
                 key="robot",
             )
         async with img_lock:
