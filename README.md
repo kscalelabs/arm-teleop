@@ -33,7 +33,7 @@ pip install -r requirements.txt
 Start the server on the robot computer.
 
 ```bash
-python play.py --robot="5dof" --camera="0"
+python play.py --robot="5dof"
 ```
 
 Start ngrok on the robot computer.

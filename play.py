@@ -23,6 +23,9 @@ from vuer.schemas import Hands, ImageBackground, PointLight, Urdf
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--robot", type=str, default="5dof")
+parser.add_argument("--enable_h5py", action="store_true")
+parser.add_argument("--enable_rerun", action="store_true")
+parser.add_argument("--enable_cam", action="store_true")
 parser.add_argument("--camera", type=str, default="webcam")
 parser.add_argument("--name", type=str, default="test", help="logging name")
 args = parser.parse_args()
@@ -71,48 +74,50 @@ print(f"\t robot: {args.robot}")
 
 # ------ camera
 
-@dataclass
-class Camera:
-    name: str  # name
-    w: int  # image width
-    h: int  # image height
-    c: int  # image channels
-    fps: int # frames per second
-    fl: int  # focal length
-    pp: Tuple[int]  # principal point
-    device_id: int = 0
-    pos: NDArray = np.array([0, 0, 0])  # position
-    orn: NDArray = np.array([0, 0, 0])  # orientation
+if args.enable_cam:
 
-CAMS: OrderedDict[str, Camera] = ODict()
-CAMS['webcam'] = Camera(
-    name="webcam",
-    w=1280,
-    h=720,
-    c=3,
-    fps=60,
-    fl=1280,
-    pp=(640, 360),
-)
+    @dataclass
+    class Camera:
+        name: str  # name
+        w: int  # image width
+        h: int  # image height
+        c: int  # image channels
+        fps: int # frames per second
+        fl: int  # focal length
+        pp: Tuple[int]  # principal point
+        device_id: int = 0
+        pos: NDArray = np.array([0, 0, 0])  # position
+        orn: NDArray = np.array([0, 0, 0])  # orientation
 
-assert args.camera in CAMS, f"camera {args.camera} not found"
-camera: Camera = CAMS[args.camera]
-aspect_ratio: float = camera.w / camera.h
-BGR_TO_RGB: NDArray = np.array([2, 1, 0], dtype=np.uint8)
+    CAMS: OrderedDict[str, Camera] = ODict()
+    CAMS['webcam'] = Camera(
+        name="webcam",
+        w=1280,
+        h=720,
+        c=3,
+        fps=60,
+        fl=1280,
+        pp=(640, 360),
+    )
 
-print("📸 starting camera")
-print(f"\t camera: {camera.name}")
-print(f"\t device: {camera.device_id}")
-print(f"\t resolution: {camera.w}x{camera.h}")
-print(f"\t fps: {camera.fps}")
+    assert args.camera in CAMS, f"camera {args.camera} not found"
+    camera: Camera = CAMS[args.camera]
+    aspect_ratio: float = camera.w / camera.h
+    BGR_TO_RGB: NDArray = np.array([2, 1, 0], dtype=np.uint8)
 
-img_lock: asyncio.Lock = asyncio.Lock()
-img: NDArray = np.zeros((camera.w, camera.h, camera.c), dtype=np.uint8)
+    print("📸 starting camera")
+    print(f"\t camera: {camera.name}")
+    print(f"\t device: {camera.device_id}")
+    print(f"\t resolution: {camera.w}x{camera.h}")
+    print(f"\t fps: {camera.fps}")
 
-cam_cv2: cv2.VideoCapture = cv2.VideoCapture(camera.device_id)
-cam_cv2.set(cv2.CAP_PROP_FRAME_WIDTH, camera.w)
-cam_cv2.set(cv2.CAP_PROP_FRAME_HEIGHT, camera.h)
-cam_cv2.set(cv2.CAP_PROP_FPS, camera.fps)
+    img_lock: asyncio.Lock = asyncio.Lock()
+    img: NDArray = np.zeros((camera.w, camera.h, camera.c), dtype=np.uint8)
+
+    cam_cv2: cv2.VideoCapture = cv2.VideoCapture(camera.device_id)
+    cam_cv2.set(cv2.CAP_PROP_FRAME_WIDTH, camera.w)
+    cam_cv2.set(cv2.CAP_PROP_FRAME_HEIGHT, camera.h)
+    cam_cv2.set(cv2.CAP_PROP_FPS, camera.fps)
 
 async def update_image() -> None:
     global cam_cv2
@@ -275,6 +280,7 @@ PINCH_OPEN: float = 0.10  # 10cm
 PINCH_CLOSE: float = 0.01  # 1cm
 
 print("🎨 starting vuer")
+print(f"\t max fps: {MAX_FPS}")
 vuer_app = Vuer()
 
 @vuer_app.add_handler("HAND_MOVE")
@@ -350,30 +356,36 @@ async def hand_handler(event, _):
             hl_orn = lwrist_orn
     print(f"🕒 hand_handler() took {(time.time() - _start) * 1000:.2f}ms")
 
+# ------ data recording (both h5py and rerun)
+
+if args.enable_h5py or args.enable_rerun:
+    DATA_DIR: str = os.path.join(os.path.dirname(__file__), "data")
+    DATE_FORMAT: str = "%mm%dd%Yy_%Hh%Mm"
+    MAX_EPISODE_STEPS: int = 64
+    episode_idx: int = 0
+    step: int = 0
+    logdir_name: str = "{}.{}.{}".format(
+        args.name,
+        str(uuid.uuid4())[:6],
+        datetime.now().strftime(DATE_FORMAT),
+    )
+    logdir_path = os.path.join(DATA_DIR, logdir_name)
+    os.makedirs(logdir_path, exist_ok=True)
+
+
 # ------ h5py
 
-DATA_DIR: str = os.path.join(os.path.dirname(__file__), "data")
-DATE_FORMAT: str = "%mm%dd%Yy_%Hh%Mm"
-H5PY_CHUNK_SIZE_BYTES: int = 1024**2 * 2
-MAX_EPISODE_STEPS: int = 64
+if args.enable_h5py:
 
-logdir_name: str = "{}.{}.{}".format(
-    args.name,
-    str(uuid.uuid4())[:6],
-    datetime.now().strftime(DATE_FORMAT),
-)
-logdir_path = os.path.join(DATA_DIR, logdir_name)
-os.makedirs(logdir_path, exist_ok=True)
+    H5PY_CHUNK_SIZE_BYTES: int = 1024**2 * 2
 
-data_lock: asyncio.Lock = asyncio.Lock()
-reset_h5py: bool = True
-episode_idx: int = 0
-step: int = 0
-f: h5py.File = None
+    data_lock: asyncio.Lock = asyncio.Lock()
+    reset_h5py: bool = True
+    f: h5py.File = None
 
-print("📦 starting h5py")
-print(f"\t logdir: {logdir_path}")
-print(f"\t max episode steps: {MAX_EPISODE_STEPS}")
+    print("📦 starting h5py")
+    print(f"\t logdir: {logdir_path}")
+    print(f"\t max episode steps: {MAX_EPISODE_STEPS}")
 
 async def record_h5py() -> None:
     _start: float = time.time()
@@ -398,17 +410,18 @@ async def record_h5py() -> None:
                 f.create_dataset("action/goal_pos_eel", (MAX_EPISODE_STEPS, 3))
                 f.create_dataset("action/goal_orn_eel", (MAX_EPISODE_STEPS, 4))
                 f.create_dataset("action/grip_l", (MAX_EPISODE_STEPS, 1))
-            g = f.create_group(f"metadata/{camera.name}")
-            g.attrs["resolution"] = [camera.w, camera.h]
-            g.attrs["focal_length"] = camera.fl
-            g.attrs["principal_point"] = camera.pp
-            g.attrs["fps"] = camera.fps
-            f.create_dataset(
-                f"/observations/images/{camera.name}",
-                (MAX_EPISODE_STEPS, camera.h, camera.w, camera.c),
-                dtype=camera.dtype,
-                chunks=(1, camera.h, camera.w, camera.c),
-            )
+            if args.enable_cam:
+                g = f.create_group(f"metadata/{camera.name}")
+                g.attrs["resolution"] = [camera.w, camera.h]
+                g.attrs["focal_length"] = camera.fl
+                g.attrs["principal_point"] = camera.pp
+                g.attrs["fps"] = camera.fps
+                f.create_dataset(
+                    f"/observations/images/{camera.name}",
+                    (MAX_EPISODE_STEPS, camera.h, camera.w, camera.c),
+                    dtype=camera.dtype,
+                    chunks=(1, camera.h, camera.w, camera.c),
+                )
             reset_h5py = False
     if f is not None:
         async with data_lock:
@@ -424,21 +437,21 @@ async def record_h5py() -> None:
             async with robot_lock:
                 f["observations/q_pos"][id] = robot_q
                 f["observations/q_vel"][id] = robot_q
-            async with img_lock:
-                f[f"/observations/images/{camera.name}"][id] = img
+            if args.enable_cam:
+                async with img_lock:
+                    f[f"/observations/images/{camera.name}"][id] = img
             f.flush()
             step += 1
     print(f"🕒 record_h5py() took {(time.time() - _start) * 1000:.2f}ms")
     return None
 
 # ------ rerun
+if args.enable_rerun:
+    # Blueprint stores the GUI layout for ReRun
+    blueprint: rrb.Blueprint = None
+    reset_rr: bool = True
 
-
-# Blueprint stores the GUI layout for ReRun
-blueprint: rrb.Blueprint = None
-reset_rr: bool = True
-
-print("📊 starting rerun")
+    print("📊 starting rerun")
 
 async def record_rerun() -> None:
     _start: float = time.time()
@@ -449,20 +462,22 @@ async def record_rerun() -> None:
             rrb.TimeSeriesView(origin="/state/q_vel", name="q_vel"),
             rrb.TimeSeriesView(origin="/action", name="action"),
         ]
-        blueprint = rrb.Blueprint(
-            rrb.Horizontal(
-                rrb.Vertical(
+        vert: List[rrb.SpaceView] = [
                     rrb.Spatial3DView(
                         origin="/world",
                         name="scene",
                     ),
-                    rrb.Horizontal(
-                        rrb.Spatial2DView(
-                            origin=camera.name,
-                            name=camera.name,
-                        )
-                    ),
-                ),
+        ]
+        if args.enable_cam:
+            vert.append(
+                rrb.Horizontal(rrb.Spatial2DView(
+                    origin=f"/world/{camera.name}",
+                    name=camera.name,
+                ))
+            )
+        blueprint = rrb.Blueprint(
+            rrb.Horizontal(
+                rrb.Vertical(*vert),
                 rrb.Vertical(*timeseries),
             ),
         )
@@ -473,14 +488,6 @@ async def record_rerun() -> None:
         rr.send_blueprint(blueprint=blueprint)
         print(f"📝 new rerun file {log_path}")
         reset_rr = False
-    rr.log(
-        f"world/camera/{camera.name}",
-        rr.Pinhole(
-            resolution=[camera.w, camera.h],
-            focal_length=camera.fl,
-            principal_point=camera.pp,
-        ),
-    )
     rr.set_time_seconds("cpu_time", time.time())
     rr.set_time_sequence("episode", episode_idx)
     rr.set_time_sequence("step", step)
@@ -504,12 +511,21 @@ async def record_rerun() -> None:
             ),
         )
         rr.log("action/grip_l", rr.Scalar(grip_l))
-    rr.log(camera.name, rr.Image(img))
-    rr.log(
-        f"world/{camera.name}",
-        rr.Transform3D(
-            translation=camera.pos,
-            rotation=rr.Quaternion(xyzw=camera.orn[WXYZ_2_XYZW]),
+    if args.enable_cam:
+        rr.log(camera.name, rr.Image(img))
+        rr.log(
+            f"world/{camera.name}",
+            rr.Transform3D(
+                translation=camera.pos,
+                rotation=rr.Quaternion(xyzw=camera.orn[WXYZ_2_XYZW]),
+            ),
+        )
+        rr.log(
+            f"world/{camera.name}",
+            rr.Pinhole(
+                resolution=[camera.w, camera.h],
+                focal_length=camera.fl,
+                principal_point=camera.pp,
         ),
     )
     print(f"🕒 record_rerun() took {(time.time() - _start) * 1000:.2f}ms")
@@ -535,14 +551,19 @@ async def main(session: VuerSession):
     )
     print("🚀 starting main loop")
     while True:
-        await asyncio.gather(
-            ik("left"),  # ~1ms
-            ik("right"),  # ~1ms
-            record_h5py(), # ~10ms
-            record_rerun(), # ~10ms
-            update_image(),  # ~10ms
-            asyncio.sleep(1 / MAX_FPS),  # ~16ms @ 60fps
-        )
+        tasks: List[asyncio._CoroutineLike] = []
+        tasks.append(ik("right"))
+        if robot.bimanual:
+            tasks.append(ik("left"))
+        if args.enable_h5py:
+            tasks.append(record_h5py())
+        if args.enable_rerun:
+            tasks.append(record_rerun())
+        if args.enable_cam:
+            tasks.append(update_image())
+        # set a maximum fps
+        tasks.append(asyncio.sleep(1 / MAX_FPS))
+        await asyncio.gather(*tasks)
         async with robot_lock:
             _start: float = time.time()
             session.upsert @ Urdf(
