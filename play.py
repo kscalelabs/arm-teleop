@@ -80,10 +80,9 @@ class Camera:
     fps: int # frames per second
     fl: int  # focal length
     pp: Tuple[int]  # principal point
-    low: int = 0
-    high: int = 255
-    dtype = np.uint8
     device_id: int = 0
+    pos: NDArray = np.array([0, 0, 0])  # position
+    orn: NDArray = np.array([0, 0, 0])  # orientation
 
 CAMS: OrderedDict[str, Camera] = ODict()
 CAMS['webcam'] = Camera(
@@ -108,7 +107,7 @@ print(f"\t resolution: {camera.w}x{camera.h}")
 print(f"\t fps: {camera.fps}")
 
 img_lock: asyncio.Lock = asyncio.Lock()
-img: NDArray = np.zeros((camera.w, camera.h, camera.c), dtype=camera.dtype)
+img: NDArray = np.zeros((camera.w, camera.h, camera.c), dtype=np.uint8)
 
 cam_cv2: cv2.VideoCapture = cv2.VideoCapture(camera.device_id)
 cam_cv2.set(cv2.CAP_PROP_FRAME_WIDTH, camera.w)
@@ -445,16 +444,11 @@ async def record_rerun() -> None:
     _start: float = time.time()
     global blueprint, reset_rr
     if blueprint is None:
-        time_series_views: List[rrb.SpaceView] = []
-        time_series_views.append(
+        timeseries: List[rrb.SpaceView] = [
             rrb.TimeSeriesView(origin="/state/q_pos", name="q_pos"),
-        )
-        time_series_views.append(
             rrb.TimeSeriesView(origin="/state/q_vel", name="q_vel"),
-        )
-        time_series_views.append(
             rrb.TimeSeriesView(origin="/action", name="action"),
-        )
+        ]
         blueprint = rrb.Blueprint(
             rrb.Horizontal(
                 rrb.Vertical(
@@ -469,7 +463,7 @@ async def record_rerun() -> None:
                         )
                     ),
                 ),
-                rrb.Vertical(*time_series_views),
+                rrb.Vertical(*timeseries),
             ),
         )
         rr.init(robot.name, default_blueprint=blueprint)
@@ -490,34 +484,34 @@ async def record_rerun() -> None:
     rr.set_time_seconds("cpu_time", time.time())
     rr.set_time_sequence("episode", episode_idx)
     rr.set_time_sequence("step", step)
-    rr.log(f"state/q_pos/{key}", rr.Scalar(observation["q_pos"][i]))
-    rr.log(f"state/q_vel/{key}", rr.Scalar(observation["q_vel"][i]))
+    for i in range(q_len):
+        rr.log(f"state/q_pos/{i}", rr.Scalar(robot_q[i]))
+        rr.log(f"state/q_vel/{i}", rr.Scalar(robot_q[i]))
     rr.log(
         "world/eer",
         rr.Transform3D(
-            translation=action["eer_pos"],
-            # rotation=rr.Quaternion(xyzw=action["eer_orn"][k.WXYZ_2_XYZW]),
+            translation=eer_pos,
+            rotation=rr.Quaternion(xyzw=eer_orn[WXYZ_2_XYZW]),
         ),
     )
-    rr.log("action/grip_r", rr.Scalar(action["grip_r"]))
+    rr.log("action/grip_r", rr.Scalar(grip_r))
     if robot.bimanual:
         rr.log(
             "world/eel",
             rr.Transform3D(
-                translation=action["eel_pos"],
-                # rotation=rr.Quaternion(xyzw=action["eel_orn"][k.WXYZ_2_XYZW]),
+                translation=eel_pos,
+                rotation=rr.Quaternion(xyzw=eel_orn[WXYZ_2_XYZW]),
             ),
         )
-        rr.log("action/grip_l", rr.Scalar(action["grip_l"]))
-    for cam in info["cameras"]:
-        rr.log(cam.log_name, rr.Image(observation[cam.log_name]))
-        rr.log(
-            f"world/{cam.name}",
-            rr.Transform3D(
-                translation=self.mj_env.physics.data.camera(cam.name).xpos,
-                rotation=rr.Quaternion(xyzw=_quat[k.WXYZ_2_XYZW]),
-            ),
-        )
+        rr.log("action/grip_l", rr.Scalar(grip_l))
+    rr.log(camera.name, rr.Image(img))
+    rr.log(
+        f"world/{camera.name}",
+        rr.Transform3D(
+            translation=camera.pos,
+            rotation=rr.Quaternion(xyzw=camera.orn[WXYZ_2_XYZW]),
+        ),
+    )
     print(f"🕒 record_rerun() took {(time.time() - _start) * 1000:.2f}ms")
     return None
 
