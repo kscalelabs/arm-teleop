@@ -55,10 +55,39 @@ class Robot:
 
 ROBOTS: OrderedDict[str, Robot] = ODict()
 ROBOTS['5dof'] = Robot(
-    urdf_path="5dof/5dof.urdf"
-)
-ROBOTS['torso'] = Robot(
-    urdf_path="7dof/7dof.urdf"
+    urdf_path="robot/full_arm_5_dof_merged_simplified.urdf",
+    bimanual=False,
+    start_q=ODict([
+        ('joint_upper_left_arm_1_rmd_x4_24_mock_1_dof_x4', 0.0),
+        ('joint_upper_left_arm_1_rmd_x4_24_mock_2_dof_x4', 0.0),
+        ('joint_upper_left_arm_1_rmd_x8_90_mock_2_dof_x8', 0.0),
+        ('joint_lower_arm_1_dof_1_rmd_x4_24_mock_2_dof_x4', 0.0),
+        ('joint_lower_arm_1_dof_1_hand_1_rmd_x4_24_mock_1_dof_x4', 0.0),
+        ('joint_upper_left_arm_1_rmd_x8_90_mock_1_dof_x8', 0.0),
+        ('joint_lower_arm_1_dof_1_hand_1_slider_1', 0.0),
+        ('joint_lower_arm_1_dof_1_hand_1_slider_2', 0.0),
+    ]),
+    eer_link="fused_component_upper_left_arm_1_rmd_x8_90_mock_1_outer_rmd_x8_90_1",
+    eer_chain=[
+        'joint_upper_left_arm_1_rmd_x4_24_mock_1_dof_x4',
+        'joint_upper_left_arm_1_rmd_x4_24_mock_2_dof_x4',
+        'joint_upper_left_arm_1_rmd_x8_90_mock_2_dof_x8',
+        'joint_lower_arm_1_dof_1_rmd_x4_24_mock_2_dof_x4',
+        'joint_lower_arm_1_dof_1_hand_1_rmd_x4_24_mock_1_dof_x4',
+        'joint_upper_left_arm_1_rmd_x8_90_mock_1_dof_x8',
+        # 'joint_lower_arm_1_dof_1_hand_1_slider_1',
+        # 'joint_lower_arm_1_dof_1_hand_1_slider_2',
+    ],
+    pb_ik_q_list=[
+        'joint_upper_left_arm_1_rmd_x4_24_mock_1_dof_x4',
+        'joint_upper_left_arm_1_rmd_x4_24_mock_2_dof_x4',
+        'joint_upper_left_arm_1_rmd_x8_90_mock_2_dof_x8',
+        'joint_lower_arm_1_dof_1_rmd_x4_24_mock_2_dof_x4',
+        'joint_lower_arm_1_dof_1_hand_1_rmd_x4_24_mock_1_dof_x4',
+        'joint_upper_left_arm_1_rmd_x8_90_mock_1_dof_x8',
+        # 'joint_lower_arm_1_dof_1_hand_1_slider_1',
+        # 'joint_lower_arm_1_dof_1_hand_1_slider_2',
+    ],
 )
 
 assert args.robot in ROBOTS, f"robot {args.robot} not found"
@@ -573,21 +602,22 @@ async def main(session: VuerSession):
                 key="robot",
             )
             print(f"🕒 URDF upsert took {(time.time() - _start) * 1000:.2f}ms")
-        async with img_lock:
-            _start: float = time.time()
-            session.upsert(
-                ImageBackground(
-                    img,
-                    format="jpg",
-                    quality=VUER_IMG_QUALITY,
-                    interpolate=True,
-                    fixed=True,
-                    aspect=aspect_ratio,
-                    distanceToCamera=VUER_CAM_DISTANCE,
-                    position=VUER_IMAGE_PLANE_POS,
-                    rotation=VUER_IMAGE_PLANE_EUL,
-                    key="video",
-                ),
-                to="bgChildren",
-            )
-            print(f"🕒 ImageBackground upsert took {(time.time() - _start) * 1000:.2f}ms")
+        if args.enable_cam:
+            async with img_lock:
+                _start: float = time.time()
+                session.upsert(
+                    ImageBackground(
+                        img,
+                        format="jpg",
+                        quality=VUER_IMG_QUALITY,
+                        interpolate=True,
+                        fixed=True,
+                        aspect=aspect_ratio,
+                        distanceToCamera=VUER_CAM_DISTANCE,
+                        position=VUER_IMAGE_PLANE_POS,
+                        rotation=VUER_IMAGE_PLANE_EUL,
+                        key="video",
+                    ),
+                    to="bgChildren",
+                )
+                print(f"🕒 ImageBackground upsert took {(time.time() - _start) * 1000:.2f}ms")
