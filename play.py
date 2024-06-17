@@ -3,22 +3,28 @@ import asyncio
 from collections import OrderedDict as ODict
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
+import os
 import time
 from typing import Dict, List, OrderedDict, Tuple
+import uuid
 
 import cv2
+import h5py
 import numpy as np
 from numpy.typing import NDArray
 import pybullet as p
 import pybullet_data
+import rerun as rr
+import rerun.blueprint as rrb
 from scipy.spatial.transform import Rotation as R
 from vuer import Vuer, VuerSession
 from vuer.schemas import Hands, ImageBackground, PointLight, Urdf
 
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--robot", type=str, default="5dof")
-parser.add_argument("--cam", type=str, default="webcam")
+parser.add_argument("--camera", type=str, default="webcam")
+parser.add_argument("--name", type=str, default="test", help="logging name")
 args = parser.parse_args()
 
 # ------ robots
@@ -56,6 +62,7 @@ assert args.robot in ROBOTS, f"robot {args.robot} not found"
 robot: Robot = ROBOTS[args.robot]
 robot_lock: asyncio.Lock = asyncio.Lock()
 robot_q: Dict[str, float] = deepcopy(robot.start_q)
+q_len: int = len(robot_q)
 robot_pos: NDArray = robot.vuer_start_pos
 robot_orn: NDArray = robot.vuer_start_eul
 
@@ -89,31 +96,31 @@ CAMS['webcam'] = Camera(
     pp=(640, 360),
 )
 
-assert args.cam in CAMS, f"camera {args.cam} not found"
-cam: Camera = CAMS[args.cam]
-aspect_ratio: float = cam.w / cam.h
+assert args.camera in CAMS, f"camera {args.camera} not found"
+camera: Camera = CAMS[args.camera]
+aspect_ratio: float = camera.w / camera.h
 BGR_TO_RGB: NDArray = np.array([2, 1, 0], dtype=np.uint8)
 
 print("📸 starting camera")
-print(f"\t camera: {cam.name}")
-print(f"\t device: {cam.device_id}")
-print(f"\t resolution: {cam.w}x{cam.h}")
-print(f"\t fps: {cam.fps}")
+print(f"\t camera: {camera.name}")
+print(f"\t device: {camera.device_id}")
+print(f"\t resolution: {camera.w}x{camera.h}")
+print(f"\t fps: {camera.fps}")
 
 img_lock: asyncio.Lock = asyncio.Lock()
-img: NDArray = np.zeros((cam.w, cam.h, cam.c), dtype=cam.dtype)
+img: NDArray = np.zeros((camera.w, camera.h, camera.c), dtype=camera.dtype)
 
-cam: cv2.VideoCapture = cv2.VideoCapture(cam.device_id)
-cam.set(cv2.CAP_PROP_FRAME_WIDTH, cam.w)
-cam.set(cv2.CAP_PROP_FRAME_HEIGHT, cam.h)
-cam.set(cv2.CAP_PROP_FPS, cam.fps)
+cam_cv2: cv2.VideoCapture = cv2.VideoCapture(camera.device_id)
+cam_cv2.set(cv2.CAP_PROP_FRAME_WIDTH, camera.w)
+cam_cv2.set(cv2.CAP_PROP_FRAME_HEIGHT, camera.h)
+cam_cv2.set(cv2.CAP_PROP_FPS, camera.fps)
 
 async def update_image() -> None:
-    global cam
-    if not cam.isOpened():
+    global cam_cv2
+    if not cam_cv2.isOpened():
         raise ValueError("Camera is not available")
     start = time.time()
-    ret, frame = cam.read()
+    ret, frame = cam_cv2.read()
     if ret:
         async with img_lock:
             global img
@@ -149,26 +156,6 @@ def vuer2mj_pos(pos: NDArray) -> NDArray:
 def vuer2mj_orn(orn: R) -> NDArray:
     rot = orn * VUER_TO_MJ_ROT
     return rot.as_quat()[WXYZ_2_XYZW]
-
-# ------ h5py
-
-print("📦 starting h5py")
-
-async def record_h5py() -> None:
-    _start: float = time.time()
-    time.sleep(1.0)
-    print(f"🕒 record_h5py() took {(time.time() - _start) * 1000:.2f}ms")
-    return None
-
-# ------ rerun
-
-print("📊 starting rerun")
-
-async def record_rerun() -> None:
-    _start: float = time.time()
-    time.sleep(1.0)
-    print(f"🕒 record_rerun() took {(time.time() - _start) * 1000:.2f}ms")
-    return None
 
 # ------ pybullet (used for ik)
 
@@ -223,6 +210,7 @@ for i in range(pb_num_joints):
         pb_damping[i] = DAMPING_NON_CHAIN
     p.resetJointState(pb_robot_id, i, pb_start_q[i])
 
+action_lock: asyncio.Lock = asyncio.Lock()
 pb_eer_id: int = pb_child_link_names.index(robot.eer_link)
 goal_pos_eer: NDArray = robot.pb_start_pos_eer
 goal_orn_eer: NDArray = p.getQuaternionFromEuler(robot.pb_start_eul_eer)
@@ -288,9 +276,9 @@ PINCH_OPEN: float = 0.10  # 10cm
 PINCH_CLOSE: float = 0.01  # 1cm
 
 print("🎨 starting vuer")
-app = Vuer()
+vuer_app = Vuer()
 
-@app.add_handler("HAND_MOVE")
+@vuer_app.add_handler("HAND_MOVE")
 async def hand_handler(event, _):
     _start: float = time.time()
     global hr_pos, hr_orn, eer_pos, eer_orn, grip_r, reset
@@ -304,7 +292,7 @@ async def hand_handler(event, _):
     # index finger to thumb pinch turns on tracking
     rpinch_dist: NDArray = np.linalg.norm(rindex_pos - rthumb_pos)
     if rpinch_dist < PINCH_CLOSE:
-        print("Pinch detected in right hand")
+        print("👌 pinch detected in right hand")
         # pinching with middle finger controls gripper
         rmiddl_pos: NDArray = np.array(event.value["rightLandmarks"][FINGER_MIDLE])
         rgrip_dist: float = np.linalg.norm(rthumb_pos - rmiddl_pos) / PINCH_OPEN
@@ -339,7 +327,7 @@ async def hand_handler(event, _):
         lwrist_orn = R.from_matrix(lwrist_orn).as_euler("xyz")
         # index finger to thumb pinch turns on tracking
         if lpinch_dist < PINCH_CLOSE:
-            print("Pinch detected in left hand")
+            print("👌 pinch detected in left hand")
             # pinching with middle finger controls gripper
             lmiddl_pos: NDArray = np.array(event.value["leftLandmarks"][FINGER_MIDLE])
             lgrip_dist: float = np.linalg.norm(lthumb_pos - lmiddl_pos) / PINCH_OPEN
@@ -363,7 +351,179 @@ async def hand_handler(event, _):
             hl_orn = lwrist_orn
     print(f"🕒 hand_handler() took {(time.time() - _start) * 1000:.2f}ms")
 
-@app.spawn(start=True)
+# ------ h5py
+
+DATA_DIR: str = os.path.join(os.path.dirname(__file__), "data")
+DATE_FORMAT: str = "%mm%dd%Yy_%Hh%Mm"
+H5PY_CHUNK_SIZE_BYTES: int = 1024**2 * 2
+MAX_EPISODE_STEPS: int = 64
+
+logdir_name: str = "{}.{}.{}".format(
+    args.name,
+    str(uuid.uuid4())[:6],
+    datetime.now().strftime(DATE_FORMAT),
+)
+logdir_path = os.path.join(DATA_DIR, logdir_name)
+os.makedirs(logdir_path, exist_ok=True)
+
+data_lock: asyncio.Lock = asyncio.Lock()
+reset_h5py: bool = True
+episode_idx: int = 0
+step: int = 0
+f: h5py.File = None
+
+print("📦 starting h5py")
+print(f"\t logdir: {logdir_path}")
+print(f"\t max episode steps: {MAX_EPISODE_STEPS}")
+
+async def record_h5py() -> None:
+    _start: float = time.time()
+    global f, episode_idx, step, reset_h5py, img, robot_q
+    if reset_h5py:
+        async with data_lock:
+            if f is not None:
+                f.close()
+                episode_idx += 1
+            log_path: str = os.path.join(logdir_path, f"episode_{episode_idx}.hdf5")
+            f = h5py.File(log_path, "w", rdcc_nbytes=H5PY_CHUNK_SIZE_BYTES)
+            print(f"📝 new h5py file {log_path}")
+            f.attrs["robot"] = robot
+            f.attrs["camera"] = camera
+            f.create_group("observations/images")
+            f.create_dataset("observations/q_pos", (MAX_EPISODE_STEPS, q_len))
+            f.create_dataset("observations/q_vel", (MAX_EPISODE_STEPS, q_len))
+            f.create_dataset("action/goal_pos_eer", (MAX_EPISODE_STEPS, 3))
+            f.create_dataset("action/goal_orn_eer", (MAX_EPISODE_STEPS, 4))
+            f.create_dataset("action/grip_r", (MAX_EPISODE_STEPS, 1))
+            if robot.bimanual:
+                f.create_dataset("action/goal_pos_eel", (MAX_EPISODE_STEPS, 3))
+                f.create_dataset("action/goal_orn_eel", (MAX_EPISODE_STEPS, 4))
+                f.create_dataset("action/grip_l", (MAX_EPISODE_STEPS, 1))
+            g = f.create_group(f"metadata/{camera.name}")
+            g.attrs["resolution"] = [camera.w, camera.h]
+            g.attrs["focal_length"] = camera.fl
+            g.attrs["principal_point"] = camera.pp
+            g.attrs["fps"] = camera.fps
+            f.create_dataset(
+                f"/observations/images/{camera.name}",
+                (MAX_EPISODE_STEPS, camera.h, camera.w, camera.c),
+                dtype=camera.dtype,
+                chunks=(1, camera.h, camera.w, camera.c),
+            )
+            reset_h5py = False
+    if f is not None:
+        async with data_lock:
+            id: int = info["step"] - 1
+            async with action_lock:
+                f["action/goal_pos_eer"][id] = goal_pos_eer
+                f["action/goal_orn_eer"][id] = goal_orn_eer
+                f["action/grip_r"][id] = grip_r
+                if robot.bimanual:
+                    f["action/goal_pos_eel"][id] = goal_pos_eel
+                    f["action/goal_orn_eel"][id] = goal_orn_eel
+                    f["action/grip_l"][id] = grip_l
+            async with robot_lock:
+                f["observations/q_pos"][id] = robot_q
+                f["observations/q_vel"][id] = robot_q
+            async with img_lock:
+                f[f"/observations/images/{camera.name}"][id] = img
+            f.flush()
+            step += 1
+    print(f"🕒 record_h5py() took {(time.time() - _start) * 1000:.2f}ms")
+    return None
+
+# ------ rerun
+
+
+# Blueprint stores the GUI layout for ReRun
+blueprint: rrb.Blueprint = None
+reset_rr: bool = True
+
+print("📊 starting rerun")
+
+async def record_rerun() -> None:
+    _start: float = time.time()
+    global blueprint, reset_rr
+    if blueprint is None:
+        time_series_views: List[rrb.SpaceView] = []
+        time_series_views.append(
+            rrb.TimeSeriesView(origin="/state/q_pos", name="q_pos"),
+        )
+        time_series_views.append(
+            rrb.TimeSeriesView(origin="/state/q_vel", name="q_vel"),
+        )
+        time_series_views.append(
+            rrb.TimeSeriesView(origin="/action", name="action"),
+        )
+        blueprint = rrb.Blueprint(
+            rrb.Horizontal(
+                rrb.Vertical(
+                    rrb.Spatial3DView(
+                        origin="/world",
+                        name="scene",
+                    ),
+                    rrb.Horizontal(
+                        rrb.Spatial2DView(
+                            origin=camera.name,
+                            name=camera.name,
+                        )
+                    ),
+                ),
+                rrb.Vertical(*time_series_views),
+            ),
+        )
+        rr.init(robot.name, default_blueprint=blueprint)
+    if reset_rr:
+        log_path: str = os.path.join(logdir_path, f"episode_{episode_idx}.rrd")
+        rr.save(log_path, default_blueprint=blueprint)
+        rr.send_blueprint(blueprint=blueprint)
+        print(f"📝 new rerun file {log_path}")
+        reset_rr = False
+    rr.log(
+        f"world/camera/{camera.name}",
+        rr.Pinhole(
+            resolution=[camera.w, camera.h],
+            focal_length=camera.fl,
+            principal_point=camera.pp,
+        ),
+    )
+    rr.set_time_seconds("cpu_time", time.time())
+    rr.set_time_sequence("episode", episode_idx)
+    rr.set_time_sequence("step", step)
+    rr.log(f"state/q_pos/{key}", rr.Scalar(observation["q_pos"][i]))
+    rr.log(f"state/q_vel/{key}", rr.Scalar(observation["q_vel"][i]))
+    rr.log(
+        "world/eer",
+        rr.Transform3D(
+            translation=action["eer_pos"],
+            # rotation=rr.Quaternion(xyzw=action["eer_orn"][k.WXYZ_2_XYZW]),
+        ),
+    )
+    rr.log("action/grip_r", rr.Scalar(action["grip_r"]))
+    if robot.bimanual:
+        rr.log(
+            "world/eel",
+            rr.Transform3D(
+                translation=action["eel_pos"],
+                # rotation=rr.Quaternion(xyzw=action["eel_orn"][k.WXYZ_2_XYZW]),
+            ),
+        )
+        rr.log("action/grip_l", rr.Scalar(action["grip_l"]))
+    for cam in info["cameras"]:
+        rr.log(cam.log_name, rr.Image(observation[cam.log_name]))
+        rr.log(
+            f"world/{cam.name}",
+            rr.Transform3D(
+                translation=self.mj_env.physics.data.camera(cam.name).xpos,
+                rotation=rr.Quaternion(xyzw=_quat[k.WXYZ_2_XYZW]),
+            ),
+        )
+    print(f"🕒 record_rerun() took {(time.time() - _start) * 1000:.2f}ms")
+    return None
+
+# ------ main loop
+
+@vuer_app.spawn(start=True)
 async def main(session: VuerSession):
     global q
     global cube_pos, cube_orn
@@ -379,23 +539,27 @@ async def main(session: VuerSession):
         rotation=robot_orn,
         key="robot",
     )
+    print("🚀 starting main loop")
     while True:
         await asyncio.gather(
             ik("left"),  # ~1ms
             ik("right"),  # ~1ms
-            record_h5py(),
-            record_rerun(),
+            record_h5py(), # ~10ms
+            record_rerun(), # ~10ms
             update_image(),  # ~10ms
             asyncio.sleep(1 / MAX_FPS),  # ~16ms @ 60fps
         )
         async with robot_lock:
+            _start: float = time.time()
             session.upsert @ Urdf(
                 jointValues=robot_q,
                 position=robot_pos,
                 rotation=robot_orn,
                 key="robot",
             )
+            print(f"🕒 URDF upsert took {(time.time() - _start) * 1000:.2f}ms")
         async with img_lock:
+            _start: float = time.time()
             session.upsert(
                 ImageBackground(
                     img,
@@ -411,3 +575,4 @@ async def main(session: VuerSession):
                 ),
                 to="bgChildren",
             )
+            print(f"🕒 ImageBackground upsert took {(time.time() - _start) * 1000:.2f}ms")
