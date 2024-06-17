@@ -22,7 +22,7 @@ from vuer import Vuer, VuerSession
 from vuer.schemas import Hands, ImageBackground, PointLight, Urdf
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--robot", type=str, default="5dof")
+parser.add_argument("--robot", type=str, default="stompy")
 parser.add_argument("--enable_h5py", action="store_true")
 parser.add_argument("--enable_rerun", action="store_true")
 parser.add_argument("--enable_cam", action="store_true")
@@ -38,7 +38,8 @@ DATE_FORMAT: str = "%mm%dd%Yy_%Hh%Mm"
 
 @dataclass
 class Robot:
-    urdf_path: str
+    urdf_local_path: str
+    urdf_web_path: str
     bimanual: bool
     start_q: OrderedDict[str, float]
     eer_link: str = None
@@ -58,9 +59,104 @@ class Robot:
     pb_start_eul_eel: NDArray = np.array([0, 0, 0])
 
 ROBOTS: OrderedDict[str, Robot] = ODict()
+ROBOTS['stompy'] = Robot(
+    urdf_local_path=f"{ASSETS_DIR}/stompy_tiny/robot.urdf",
+    urdf_web_path="https://raw.githubusercontent.com/kscalelabs/webstompy/master/urdf/stompy_tiny_glb/robot.urdf",
+    bimanual=True,
+    start_q=ODict([
+        ("joint_head_1_x4_1_dof_x4", -1.0),
+        ("joint_head_1_x4_2_dof_x4", 0.0),
+        ("joint_legs_1_x8_1_dof_x8", -0.50),
+        ("joint_legs_1_right_leg_1_x8_1_dof_x8", -0.50),
+        ("joint_legs_1_right_leg_1_x10_2_dof_x10", -0.97),
+        ("joint_legs_1_right_leg_1_knee_revolute", 0.10),
+        ("joint_legs_1_right_leg_1_ankle_revolute", 0.0),
+        ("joint_legs_1_right_leg_1_x4_1_dof_x4", 0.0),
+        ("joint_legs_1_x8_2_dof_x8", 0.50),
+        ("joint_legs_1_left_leg_1_x8_1_dof_x8", -0.50),
+        ("joint_legs_1_left_leg_1_x10_1_dof_x10", 0.97),
+        ("joint_legs_1_left_leg_1_knee_revolute", -0.10),
+        ("joint_legs_1_left_leg_1_ankle_revolute", 0.0),
+        ("joint_legs_1_left_leg_1_x4_1_dof_x4", 0.0),
+        ("joint_right_arm_1_x8_1_dof_x8", 1.7),
+        ("joint_right_arm_1_x8_2_dof_x8", 1.6),
+        ("joint_right_arm_1_x6_1_dof_x6", 0.34),
+        ("joint_right_arm_1_x6_2_dof_x6", 1.6),
+        ("joint_right_arm_1_x4_1_dof_x4", 1.4),
+        ("joint_right_arm_1_hand_1_x4_1_dof_x4", -0.26),
+        ("joint_left_arm_2_x8_1_dof_x8", -1.7),
+        ("joint_left_arm_2_x8_2_dof_x8", -1.6),
+        ("joint_left_arm_2_x6_1_dof_x6", -0.34),
+        ("joint_left_arm_2_x6_2_dof_x6", -1.6),
+        ("joint_left_arm_2_x4_1_dof_x4", -1.4),
+        ("joint_left_arm_2_hand_1_x4_1_dof_x4", -1.7),
+        ("joint_right_arm_1_hand_1_slider_1", 0.0),
+        ("joint_right_arm_1_hand_1_slider_2", 0.0),
+        ("joint_left_arm_2_hand_1_slider_1", 0.0),
+        ("joint_left_arm_2_hand_1_slider_2", 0.0),
+    ]),
+    eer_link="link_right_arm_1_hand_1_x4_2_outer_1",
+    eel_link="link_left_arm_2_hand_1_x4_2_outer_1",
+    eer_chain=[
+        "joint_right_arm_1_x8_1_dof_x8",
+        "joint_right_arm_1_x8_2_dof_x8",
+        "joint_right_arm_1_x6_1_dof_x6",
+        "joint_right_arm_1_x6_2_dof_x6",
+        "joint_right_arm_1_x4_1_dof_x4",
+        "joint_right_arm_1_hand_1_x4_1_dof_x4",
+    ],
+    eel_chain=[
+        "joint_left_arm_2_x8_1_dof_x8",
+        "joint_left_arm_2_x8_2_dof_x8",
+        "joint_left_arm_2_x6_1_dof_x6",
+        "joint_left_arm_2_x6_2_dof_x6",
+        "joint_left_arm_2_x4_1_dof_x4",
+        "joint_left_arm_2_hand_1_x4_1_dof_x4",
+    ],
+    pb_ik_q_list=[
+        "joint_head_1_x4_1_dof_x4",
+        "joint_head_1_x4_2_dof_x4",
+        "joint_right_arm_1_x8_1_dof_x8",
+        "joint_right_arm_1_x8_2_dof_x8",
+        "joint_right_arm_1_x6_1_dof_x6",
+        "joint_right_arm_1_x6_2_dof_x6",
+        "joint_right_arm_1_x4_1_dof_x4",
+        "joint_right_arm_1_hand_1_x4_1_dof_x4",
+        "joint_right_arm_1_hand_1_slider_1",
+        "joint_right_arm_1_hand_1_slider_2",
+        "joint_right_arm_1_hand_1_x4_2_dof_x4",
+        "joint_left_arm_2_x8_1_dof_x8",
+        "joint_left_arm_2_x8_2_dof_x8",
+        "joint_left_arm_2_x6_1_dof_x6",
+        "joint_left_arm_2_x6_2_dof_x6",
+        "joint_left_arm_2_x4_1_dof_x4",
+        "joint_left_arm_2_hand_1_x4_1_dof_x4",
+        "joint_left_arm_2_hand_1_slider_1",
+        "joint_left_arm_2_hand_1_slider_2",
+        "joint_left_arm_2_hand_1_x4_2_dof_x4",
+        "joint_torso_1_x8_1_dof_x8",
+        "joint_legs_1_x8_1_dof_x8",
+        "joint_legs_1_right_leg_1_x8_1_dof_x8",
+        "joint_legs_1_right_leg_1_x10_2_dof_x10",
+        "joint_legs_1_right_leg_1_knee_revolute",
+        "joint_legs_1_right_leg_1_x10_1_dof_x10",
+        "joint_legs_1_right_leg_1_ankle_revolute",
+        "joint_legs_1_right_leg_1_x6_1_dof_x6",
+        "joint_legs_1_right_leg_1_x4_1_dof_x4",
+        "joint_legs_1_x8_2_dof_x8",
+        "joint_legs_1_left_leg_1_x8_1_dof_x8",
+        "joint_legs_1_left_leg_1_x10_1_dof_x10",
+        "joint_legs_1_left_leg_1_knee_revolute",
+        "joint_legs_1_left_leg_1_x10_2_dof_x10",
+        "joint_legs_1_left_leg_1_ankle_revolute",
+        "joint_legs_1_left_leg_1_x6_1_dof_x6",
+        "joint_legs_1_left_leg_1_x4_1_dof_x4",
+    ],
+)
 ROBOTS['5dof'] = Robot(
-    urdf_path=f"{ASSETS_DIR}/full_arm_5_dof_merged_simplified.urdf",
-    # urdf_path="robot/full_arm_5_dof.urdf",
+    urdf_local_path=f"{ASSETS_DIR}/full_arm_5_dof_merged_simplified.urdf",
+    # urdf_local_path="robot/full_arm_5_dof.urdf",
+    urdf_web_path="bleh",
     bimanual=False,
     start_q=ODict([
         ('joint_upper_left_arm_1_rmd_x4_24_mock_1_dof_x4', 0.0),
@@ -209,7 +305,7 @@ else:
     if clid < 0:
         p.connect(p.GUI)
 p.setAdditionalSearchPath(pybullet_data.getDataPath())
-pb_robot_id = p.loadURDF(robot.urdf_path, robot.pb_start_pos, useFixedBase=True)
+pb_robot_id = p.loadURDF(robot.urdf_local_path, robot.pb_start_pos, useFixedBase=True)
 p.setGravity(0, 0, 0)
 p.resetBasePositionAndOrientation(
     pb_robot_id,
@@ -291,7 +387,6 @@ async def ik(arm: str) -> None:
                 robot_q[joint_name] = val
                 p.resetJointState(pb_robot_id, pb_q_map[joint_name], val)
     print(f"🕒 ik({arm}) took {(time.time() - _start) * 1000:.2f}ms")
-
 
 # ------ vuer
 
@@ -401,21 +496,18 @@ if args.enable_h5py or args.enable_rerun:
     )
     logdir_path = os.path.join(DATA_DIR, logdir_name)
     os.makedirs(logdir_path, exist_ok=True)
-
+    print("📦📊 data recording enabled")
+    print(f"\t logdir: {logdir_path}")
+    print(f"\t max episode steps: {MAX_EPISODE_STEPS}")
 
 # ------ h5py
 
 if args.enable_h5py:
-
     H5PY_CHUNK_SIZE_BYTES: int = 1024**2 * 2
-
     data_lock: asyncio.Lock = asyncio.Lock()
     reset_h5py: bool = True
     f: h5py.File = None
-
     print("📦 starting h5py")
-    print(f"\t logdir: {logdir_path}")
-    print(f"\t max episode steps: {MAX_EPISODE_STEPS}")
 
 async def record_h5py() -> None:
     _start: float = time.time()
@@ -480,7 +572,6 @@ if args.enable_rerun:
     # Blueprint stores the GUI layout for ReRun
     blueprint: rrb.Blueprint = None
     reset_rr: bool = True
-
     print("📊 starting rerun")
 
 async def record_rerun() -> None:
@@ -572,7 +663,7 @@ async def main(session: VuerSession):
     session.upsert @ Hands(fps=HAND_FPS, stream=True, key="hands")
     await asyncio.sleep(0.1)
     session.upsert @ Urdf(
-        src=robot.urdf_path,
+        src=robot.urdf_web_path,
         jointValues=robot_q,
         position=robot_pos,
         rotation=robot_orn,
@@ -593,15 +684,14 @@ async def main(session: VuerSession):
         # set a maximum fps
         tasks.append(asyncio.sleep(1 / MAX_FPS))
         await asyncio.gather(*tasks)
-        async with robot_lock:
-            _start: float = time.time()
-            session.upsert @ Urdf(
-                jointValues=robot_q,
-                position=robot_pos,
-                rotation=robot_orn,
-                key="robot",
-            )
-            print(f"🕒 URDF upsert took {(time.time() - _start) * 1000:.2f}ms")
+        _start: float = time.time()
+        session.upsert @ Urdf(
+            jointValues=robot_q,
+            position=robot_pos,
+            rotation=robot_orn,
+            key="robot",
+        )
+        print(f"🕒 URDF upsert took {(time.time() - _start) * 1000:.2f}ms")
         if args.enable_cam:
             async with img_lock:
                 _start: float = time.time()
